@@ -124,15 +124,12 @@ class ComfyUIAutoBatch:
         return available
 
     def parse_prompt_file(self, filepath: str) -> List[Dict[str, Any]]:
-        """Parse prompt file with new format [∆{workflow}•count∆ ¥prompt¥]"""
+        """Parse prompt file with format [∆{workflow}•count∆ ¥positive¥ §§negative§§] or [∆{workflow}•count∆ ¥positive¥]"""
         prompts = []
         
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
-            
-            # Pattern untuk format baru: [∆{workflow}•count∆ ¥prompt¥]
-            pattern = r'\[∆\{([^}]+)\}•(\d+)(?:∆\{([^}]+)\}•(\d+))*∆\s*¥([^¥]+)¥\]'
             
             # Split berdasarkan bracket
             tasks = re.findall(r'\[[^\]]+\]', content)
@@ -142,14 +139,16 @@ class ComfyUIAutoBatch:
                     # Extract workflows dan counts
                     workflow_matches = re.findall(r'\{([^}]+)\}•(\d+)', task)
                     
-                    # Extract prompt text
-                    prompt_match = re.search(r'¥([^¥]+)¥', task)
+                    # Extract positive dan negative prompt
+                    prompt_match = re.search(r'¥([^¥]+)¥(?:\s*§§([^§]+)§§)?', task)
                     
                     if not workflow_matches or not prompt_match:
                         self.logger.warning(f"Task {task_idx}: Invalid format - {task[:50]}...")
                         continue
                     
-                    prompt_text = prompt_match.group(1).strip()
+                    positive_prompt = prompt_match.group(1).strip()
+                    negative_prompt = prompt_match.group(2).strip() if prompt_match.group(2) else ""
+                    
                     ratios = []
                     total_count = 0
                     
@@ -165,12 +164,14 @@ class ComfyUIAutoBatch:
                     
                     if ratios and total_count > 0:
                         prompts.append({
-                            'text': prompt_text,
+                            'positive_text': positive_prompt,
+                            'negative_text': negative_prompt,
                             'ratios': ratios,
                             'task_num': task_idx,
                             'total_count': total_count
                         })
-                        self.logger.debug(f"Task {task_idx}: {total_count} generations for '{prompt_text[:30]}...'")
+                        neg_info = f" + negative" if negative_prompt else ""
+                        self.logger.debug(f"Task {task_idx}: {total_count} generations for '{positive_prompt[:30]}...'{neg_info}")
                 
                 except Exception as e:
                     self.logger.warning(f"Task {task_idx}: Parse error - {e}")
@@ -312,7 +313,7 @@ class ComfyUIAutoBatch:
         self.logger.error(f"⏰ Timeout waiting for {prompt_id} after {timeout}s")
         return False
 
-    def process_single_generation(self, prompt_text: str, workflow_type: str, gen_index: str) -> Dict[str, Any]:
+    def process_single_generation(self, positive_prompt: str, negative_prompt: str, workflow_type: str, gen_index: str) -> Dict[str, Any]:
         """Process single generation"""
         job_id = f"{workflow_type}_{gen_index}_{int(time.time())}"
         
@@ -338,7 +339,7 @@ class ComfyUIAutoBatch:
                     'reason': 'workflow_load_failed'
                 }
             
-            workflow = self.update_workflow_prompt(workflow, prompt_text)
+            workflow = self.update_workflow_prompt(workflow, positive_prompt, negative_prompt)
             
             prompt_id = self.queue_prompt_with_retry(workflow)
             if not prompt_id:
@@ -429,7 +430,8 @@ class ComfyUIAutoBatch:
         # Prepare tasks
         tasks = []
         for prompt_data in prompts:
-            prompt_text = prompt_data['text']
+            positive_prompt = prompt_data['positive_text']
+            negative_prompt = prompt_data['negative_text']
             task_num = prompt_data['task_num']
             
             for ratio_data in prompt_data['ratios']:
@@ -437,15 +439,15 @@ class ComfyUIAutoBatch:
                 count = ratio_data['count']
                 
                 for i in range(count):
-                    tasks.append((prompt_text, workflow_type, f"T{task_num}_{workflow_type}_{i+1}"))
+                    tasks.append((positive_prompt, negative_prompt, workflow_type, f"T{task_num}_{workflow_type}_{i+1}"))
         
         # Execute with ThreadPoolExecutor
         results = []
         try:
             with ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
                 future_to_task = {
-                    executor.submit(self.process_single_generation, text, wf_type, idx): (text, wf_type, idx)
-                    for text, wf_type, idx in tasks
+                    executor.submit(self.process_single_generation, pos_text, neg_text, wf_type, idx): (pos_text, neg_text, wf_type, idx)
+                    for pos_text, neg_text, wf_type, idx in tasks
                 }
                 
                 for future in as_completed(future_to_task):
