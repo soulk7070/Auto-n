@@ -212,7 +212,7 @@ class ComfyUIAutoBatch:
             self.logger.error(f"❌ Error loading {workflow_type}: {e}")
             return None
 
-    def update_workflow_prompt(self, workflow: Dict[str, Any], prompt_text: str) -> Dict[str, Any]:
+    def update_workflow_prompt(self, workflow: Dict[str, Any], positive_prompt: str, negative_prompt: str = ""):
         """Update workflow with new prompt and random seed"""
         updated_nodes = 0
         
